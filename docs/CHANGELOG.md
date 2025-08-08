@@ -1,0 +1,3 @@
+# Changelog
+
+- M1: repo registry, per-repo modes (observe/pr/disabled), per-repo webhook routing, task scan & work-next endpoints.

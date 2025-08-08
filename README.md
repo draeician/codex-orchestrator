@@ -19,12 +19,15 @@ Uses **Ollama** via **LiteLLM**, pointed at `http://aether:11434`.
 
 ---
 
-## Features (MVP)
-- **Taskmaster** seeds/updates `/tasks/*.md` from the PRD (seed task included).
-- **Developer** claims first `queued` task → creates branch → edits files → opens PR.
-- **Reviewer** comments a basic summary on PR events.
-- **Integrator** marks task `done` when PR is merged.
-- Policy: agents **never push to `main`**, only open PRs.
+## Features
+- **Repo registry (multi-repo)**: manage multiple target repos with per-repo settings.
+- **Modes**: `observe` (no changes), `pr` (open PRs), `disabled` (ignore).
+- **Endpoints**: `/repos` (CRUD and summary), per-repo `/scan`, `/status`, `/work-next`.
+- **Webhooks**: per-repo routing and signature verification.
+- **Loop agents** (MVP): Taskmaster → Developer → Reviewer → Integrator.
+- **Policy**: agents never push to `main`, only open PRs.
+
+> Note: a background polling engine is coming next; webhooks already supported.
 
 > Note: LLM calls are stubbed in MVP; the included flow is deterministic (no model needed to make the first CI PR). The README pre-wires Ollama for when you turn LLM steps on.
 

@@ -4,11 +4,15 @@ from ..adapters.ci_checks import summarize_repo_checks
 
 
 class Reviewer(AgentBase):
+    def __init__(self, repo_ctx):
+        super().__init__(repo_ctx)
+
     def review_pull_request(self, pr_event_payload: dict):
         pr = pr_event_payload.get("pull_request", {})
         number = pr.get("number")
         head_ref = pr.get("head", {}).get("ref", "")
         title = pr.get("title", "")
+        body_text = pr.get("body", "") or ""
 
         # Try to extract linked task id from PR title
         tid_match = re.search(r"(T-\d+)", title or "")
@@ -25,6 +29,12 @@ class Reviewer(AgentBase):
         lines.append("### CI checklist")
         lines.append(checks_summary.rstrip())
         lines.append("")
+        lines.append("### Documentation")
+        if "docs/CHANGELOG.md" in body_text or "CHANGELOG" in body_text:
+            lines.append("- OK: PR body references CHANGELOG updates")
+        else:
+            lines.append("- Warning: PR body does not reference docs/CHANGELOG.md; ensure it is updated and linked")
+        lines.append("")
         lines.append("### Acceptance reminder")
         if task_id:
             lines.append(f"- Validate acceptance criteria in `{task_id}` task file and PR body checklist")
@@ -37,4 +47,3 @@ class Reviewer(AgentBase):
         if number is not None:
             self.vcs.comment_on_pr(int(number), body)
         return {"ok": True, "pr": number, "task": task_id, "head": head_ref}
-
