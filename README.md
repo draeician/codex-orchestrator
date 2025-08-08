@@ -119,6 +119,10 @@ This creates a branch like `feature/T-0001-initialize-basic-ci-for-python`, adds
 
 ---
 
+## 5) Merge PR and verify task flips to done
+
+Merge the PR in GitHub UI. The webhook triggers the Integrator, which opens a small **integration PR** that updates the matching `tasks/*.md` from `status: in_review` to `status: done`. Merge that integration PR to complete the loop.
+
 ## Hook up GitHub webhooks
 
 On **sample-python-app** repo settings:

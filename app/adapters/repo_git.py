@@ -9,17 +9,17 @@ from ..utils import ensure_dir
 
 
 def _make_authed_url(plain_url: str, token: str) -> str:
-    """Embed a GitHub token in an https remote URL for push access.
-
-    If no token is provided or the URL is not https, return the original URL.
     """
-    if not token:
+    Embed a GitHub token in an https remote URL for push access.
+    Use the recommended 'x-access-token:<token>@' form.
+    """
+    if not token or not plain_url.startswith("https://"):
         return plain_url
-    if not plain_url.startswith("https://"):
-        return plain_url
-    if "@" in plain_url.split("//", 1)[1]:  # already contains credentials
-        return plain_url
-    return plain_url.replace("https://", f"https://{token}:x-oauth-basic@", 1)
+    # Strip existing creds if any
+    root = plain_url.split("://", 1)[1]
+    if "@" in root:
+        root = root.split("@", 1)[1]
+    return f"https://x-access-token:{token}@{root}"
 
 
 def file_write(path: Path, content: str) -> None:

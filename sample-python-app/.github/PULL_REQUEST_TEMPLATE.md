@@ -1,12 +1,12 @@
 ## Linked Tasks
-- T-XXXX
+- T-____
 
 ## What changed
-- 
+-
 
 ## Validation
-- CI runs on pull_request
-- Smoke test passes
+- [ ] CI is green (ruff, mypy, pytest)
+- [ ] Acceptance criteria met
 
 ## Risk
-- No protected paths changed
+- [ ] No protected paths changed
