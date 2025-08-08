@@ -21,6 +21,7 @@ from .security import verify_signature
 from .agents.reviewer import Reviewer
 from .agents.integrator import Integrator
 from .bootstrap import compute_bootstrap_plan, apply_bootstrap
+from .poller import poll_repo
 
 app = FastAPI(title="Poor Man Codex Orchestrator", version="0.1.0")
 
@@ -280,4 +281,27 @@ def bootstrap_endpoint(repo_id: str):
     # PR mode: apply and open PR
     result = apply_bootstrap(rc, plan)
     return result
+
+
+# ---- Polling endpoints ----
+
+@app.post("/poll/once")
+def poll_all_once():
+    settings = load_settings()
+    summaries: Dict[str, Any] = {}
+    for rc in list_repos():
+        summaries[rc.id] = poll_repo(rc)
+    return {
+        "ok": True,
+        "summaries": summaries,
+        "polling_enabled": settings.polling_enabled,
+    }
+
+
+@app.post("/repos/{repo_id}/poll")
+def poll_repo_once(repo_id: str):
+    rc = get_repo(repo_id)
+    if rc is None:
+        raise HTTPException(status_code=404, detail="repo not found")
+    return poll_repo(rc)
 

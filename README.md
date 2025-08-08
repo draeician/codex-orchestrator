@@ -243,6 +243,21 @@ All changes happen via PRs.
 
 ---
 
+## Polling mode (NAT-friendly)
+
+If you cannot expose webhooks, you can run the orchestrator in polling mode:
+
+- Use `POST /poll/once` to poll all registered repos once. The response includes per-repo summaries, GitHub rate-limit info, and a suggested `next_interval`.
+- The poller uses GitHub ETag caching (`If-None-Match`) to avoid counting against your budget when nothing changed (304 Not Modified).
+- When a 200 response is returned, it reads `X-RateLimit-Remaining` and `X-RateLimit-Reset` and backs off automatically if the remaining budget is low.
+- For open PRs, it triggers the Reviewer once per new head SHA. Periodically it also checks for recently merged PRs and triggers the Integrator.
+
+Environment flags (optional): `POLLING_ENABLED`, `POLL_INTERVAL_ACTIVE`, `POLL_INTERVAL_IDLE`, `MIN_REMAINING_BUDGET`.
+
+See also: `docs/CHANGELOG.md` for implementation details.
+
+---
+
 ## Enabling LLM steps (when ready)
 
 1. **Set your env** to point to Ollama:
