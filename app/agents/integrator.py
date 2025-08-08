@@ -3,6 +3,9 @@ from pathlib import Path
 from .base import AgentBase
 
 class Integrator(AgentBase):
+    def __init__(self, repo_ctx):
+        super().__init__(repo_ctx)
+
     def on_merge(self, pr_event_payload: dict):
         # Best effort: flip any "in_review" tasks back to "done" if branch contained T-XXXX
         pr = pr_event_payload.get("pull_request", {})

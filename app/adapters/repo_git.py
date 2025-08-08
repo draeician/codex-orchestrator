@@ -4,7 +4,7 @@ from typing import Optional
 
 from git import Repo, GitCommandError
 
-from ..config import Settings
+from ..registry import RepoContext
 from ..utils import ensure_dir
 
 
@@ -31,12 +31,11 @@ def file_write(path: Path, content: str) -> None:
 class RepoHelper:
     """Lightweight Git helper around a single working clone of the target repo."""
 
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        ensure_dir(self.settings.workdir_root)
-        self.local_path = os.path.join(
-            self.settings.workdir_root, f"{self.settings.gh_owner}_{self.settings.gh_repo}"
-        )
+    def __init__(self, repo_ctx: RepoContext, workdir_root: str):
+        self.repo_ctx = repo_ctx
+        self.workdir_root = workdir_root
+        ensure_dir(self.workdir_root)
+        self.local_path = os.path.join(self.workdir_root, self.repo_ctx.id)
 
     def ensure_local_clone(self) -> str:
         """Ensure the repository exists locally and is on the default branch.
@@ -45,7 +44,9 @@ class RepoHelper:
         - Updates the remote URL to the authenticated form for pushing.
         - Checks out the configured default branch (creating a local tracking branch if needed).
         """
-        authed_url = _make_authed_url(self.settings.project_clone_url, self.settings.gh_token)
+        # Use the clone URL provided by the repo context. Authentication, if needed,
+        # should be handled by the environment/credential helper.
+        authed_url = self.repo_ctx.clone_url
 
         if not os.path.exists(self.local_path):
             Repo.clone_from(authed_url, self.local_path)
@@ -66,7 +67,7 @@ class RepoHelper:
         except GitCommandError:
             pass
 
-        default_branch = self.settings.default_branch
+        default_branch = self.repo_ctx.default_branch
         try:
             repo.git.checkout(default_branch)
         except GitCommandError:
@@ -136,4 +137,44 @@ class RepoHelper:
         self.commit_all(message)
         target_branch = branch or repo.active_branch.name
         self.push_branch(target_branch)
+
+    def list_local_branches(self) -> list[str]:
+        """Return a list of local branch names."""
+        repo = self._repo()
+        try:
+            return [h.name for h in repo.branches]
+        except Exception:
+            return []
+
+    def list_remote_branches(self) -> list[str]:
+        """Return a list of remote branch names (without remote prefix)."""
+        repo = self._repo()
+        try:
+            # Ensure remotes are up to date
+            try:
+                repo.git.fetch("origin", "--prune")
+            except GitCommandError:
+                pass
+            heads: list[str] = []
+            for ref in getattr(repo.remotes, "origin", repo.remotes).origin.refs:  # type: ignore[attr-defined]
+                name = getattr(ref, "remote_head", None)
+                if not name:
+                    # Fallback: strip 'origin/' prefix
+                    full = getattr(ref, "name", "")
+                    name = full.split("/", 1)[1] if "/" in full else full
+                if name and name not in heads:
+                    heads.append(name)
+            return heads
+        except Exception:
+            # Fallback: try generic refs
+            try:
+                return [r.remote_head for r in repo.remotes.origin.refs]
+            except Exception:
+                return []
+
+    def list_all_branches(self) -> list[str]:
+        """Return union of local and remote branch names (normalized)."""
+        local = set(self.list_local_branches())
+        remote = set(self.list_remote_branches())
+        return sorted(local.union(remote))
 
