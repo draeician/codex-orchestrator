@@ -1,4 +1,0 @@
-# Require review from CODEOWNERS for critical directories
-/.github/ @Draeician
-/infra/ @Draeician
-/secrets/ @Draeician
