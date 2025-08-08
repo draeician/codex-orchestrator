@@ -35,6 +35,30 @@ class VCS:
             data = resp.json()
             return data.get("html_url", "")
 
+    def get_open_pr_by_head(self, head: str, base: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return the open PR dict for a given head branch if it exists.
+
+        Implements: GET /repos/{owner}/{repo}/pulls?state=open&head={owner}:{head}&base={base}
+        """
+        owner = self.repo_ctx.owner
+        repo = self.repo_ctx.repo
+        base_branch = base or self.repo_ctx.default_branch
+        url = f"{self.base}/repos/{owner}/{repo}/pulls"
+        params = {
+            "state": "open",
+            "head": f"{owner}:{head}",
+            "base": base_branch,
+            "per_page": 100,
+        }
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(url, headers=self.headers, params=params)
+            resp.raise_for_status()
+            prs: List[Dict[str, Any]] = resp.json() or []
+        if not prs:
+            return None
+        # API returns a list; for a unique head this will be at most one
+        return prs[0]
+
     def comment_on_pr(self, number: int, body: str) -> str:
         """Create an issue comment on the PR and return its html_url."""
         url = f"{self.base}/repos/{self.repo_ctx.owner}/{self.repo_ctx.repo}/issues/{number}/comments"

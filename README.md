@@ -251,6 +251,7 @@ If you cannot expose webhooks, you can run the orchestrator in polling mode:
 - The poller uses GitHub ETag caching (`If-None-Match`) to avoid counting against your budget when nothing changed (304 Not Modified).
 - When a 200 response is returned, it reads `X-RateLimit-Remaining` and `X-RateLimit-Reset` and backs off automatically if the remaining budget is low.
 - For open PRs, it triggers the Reviewer once per new head SHA. Periodically it also checks for recently merged PRs and triggers the Integrator.
+- When Integrator runs via polling, it will automatically open (or reuse) the small mark-done PR for the corresponding task.
 
 Environment flags (optional): `POLLING_ENABLED`, `POLL_INTERVAL_ACTIVE`, `POLL_INTERVAL_IDLE`, `MIN_REMAINING_BUDGET`.
 

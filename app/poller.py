@@ -136,10 +136,13 @@ def poll_repo(repo_ctx: RepoContext) -> Dict[str, Any]:
         if new_etag:
             state.setdefault("closed", {})["etag"] = new_etag
         pulls: List[Dict[str, Any]] = list(data2 or [])
-        for pr in pulls:
+        # Only consider merged PRs
+        merged_prs = [pr for pr in pulls if pr.get("merged_at")]
+        if last_merged_at is None:
+            # First run: process only the most recent merged PR (avoid flooding)
+            merged_prs = merged_prs[:1]
+        for pr in merged_prs:
             merged_at = pr.get("merged_at")
-            if not merged_at:
-                continue
             if last_merged_at and merged_at <= last_merged_at:
                 continue
             merged_changed.append(pr)
@@ -212,6 +215,11 @@ def poll_repo(repo_ctx: RepoContext) -> Dict[str, Any]:
         "merged_changed": merged_numbers,
         "rate_limit": {"remaining": remaining, "reset": reset_epoch},
     }
+    # Include additional closed summary info
+    try:
+        summary["closed_seen"] = len(merged_changed)
+    except Exception:
+        pass
     if remaining is not None and remaining < 200 and reset_epoch:
         summary["backoff_until"] = datetime.fromtimestamp(reset_epoch, tz=timezone.utc).isoformat()
     return summary
