@@ -1,5 +1,6 @@
 .env
 venv/
 state/ 
-__pycache__
+__pycache__/
+*.pyc
 sanity-check.bash
