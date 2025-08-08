@@ -18,6 +18,12 @@ class Settings(BaseModel):
     llm_reviewer_model: str = "qwen3:32b"
     llm_integrator_model: str = "none"
 
+    # Polling engine
+    polling_enabled: bool = False
+    poll_interval_active: int = 120
+    poll_interval_idle: int = 300
+    min_remaining_budget: int = 200
+
 
 def load_settings() -> Settings:
     return Settings(
@@ -33,5 +39,9 @@ def load_settings() -> Settings:
         llm_developer_model=os.environ.get("LLM_DEVELOPER_MODEL", "qwen3-coder:latest"),
         llm_reviewer_model=os.environ.get("LLM_REVIEWER_MODEL", "qwen3:32b"),
         llm_integrator_model=os.environ.get("LLM_INTEGRATOR_MODEL", "none"),
+        polling_enabled=os.environ.get("POLLING_ENABLED", "false").strip().lower() == "true",
+        poll_interval_active=int(os.environ.get("POLL_INTERVAL_ACTIVE", "120")),
+        poll_interval_idle=int(os.environ.get("POLL_INTERVAL_IDLE", "300")),
+        min_remaining_budget=int(os.environ.get("MIN_REMAINING_BUDGET", "200")),
     )
 
