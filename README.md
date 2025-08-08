@@ -19,12 +19,15 @@ Uses **Ollama** via **LiteLLM**, pointed at `http://aether:11434`.
 
 ---
 
-## Features (MVP)
-- **Taskmaster** seeds/updates `/tasks/*.md` from the PRD (seed task included).
-- **Developer** claims first `queued` task → creates branch → edits files → opens PR.
-- **Reviewer** comments a basic summary on PR events.
-- **Integrator** marks task `done` when PR is merged.
-- Policy: agents **never push to `main`**, only open PRs.
+## Features
+- **Repo registry (multi-repo)**: manage multiple target repos with per-repo settings.
+- **Modes**: `observe` (no changes), `pr` (open PRs), `disabled` (ignore).
+- **Endpoints**: `/repos` (CRUD and summary), per-repo `/scan`, `/status`, `/work-next`.
+- **Webhooks**: per-repo routing and signature verification.
+- **Loop agents** (MVP): Taskmaster → Developer → Reviewer → Integrator.
+- **Policy**: agents never push to `main`, only open PRs.
+
+> Note: a background polling engine is coming next; webhooks already supported.
 
 > Note: LLM calls are stubbed in MVP; the included flow is deterministic (no model needed to make the first CI PR). The README pre-wires Ollama for when you turn LLM steps on.
 
@@ -237,6 +240,21 @@ Basic files (short versions):
   * **closed (merged\:true)** → Integrator flips matching task to `done`.
 
 All changes happen via PRs.
+
+---
+
+## Polling mode (NAT-friendly)
+
+If you cannot expose webhooks, you can run the orchestrator in polling mode:
+
+- Use `POST /poll/once` to poll all registered repos once. The response includes per-repo summaries, GitHub rate-limit info, and a suggested `next_interval`.
+- The poller uses GitHub ETag caching (`If-None-Match`) to avoid counting against your budget when nothing changed (304 Not Modified).
+- When a 200 response is returned, it reads `X-RateLimit-Remaining` and `X-RateLimit-Reset` and backs off automatically if the remaining budget is low.
+- For open PRs, it triggers the Reviewer once per new head SHA. Periodically it also checks for recently merged PRs and triggers the Integrator.
+
+Environment flags (optional): `POLLING_ENABLED`, `POLL_INTERVAL_ACTIVE`, `POLL_INTERVAL_IDLE`, `MIN_REMAINING_BUDGET`.
+
+See also: `docs/CHANGELOG.md` for implementation details.
 
 ---
 
