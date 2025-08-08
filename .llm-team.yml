@@ -1,0 +1,20 @@
+project:
+  name: sample-python-app
+  protected_paths: [".github/", "infra/", "secrets/"]
+workflow:
+  branch_prefix: "feature/"
+  merge_strategy: "squash"
+  dry_run: false
+roles:
+  planner: {enabled: true}
+  taskmaster: {enabled: true}
+  developer: {enabled: true}
+  reviewer: {enabled: true}
+  integrator: {enabled: true}
+tasks:
+  dir: "tasks"
+  states: ["queued","in_review","ready_for_integration","done","blocked"]
+checks:
+  require_tests: true
+  coverage_min: 0
+
