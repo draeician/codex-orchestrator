@@ -1,12 +1,63 @@
 import re
+import logging
 from pathlib import Path
 from git import GitCommandError
 import httpx
 from .base import AgentBase
 
+logger = logging.getLogger(__name__)
+
 class Integrator(AgentBase):
     def __init__(self, repo_ctx):
         super().__init__(repo_ctx)
+
+    def _ensure_task_file(self, repo_ctx, task_id: str, repo) -> str:
+        """
+        Ensure tasks/<task_id>-*.md exists in the working tree.
+        Return the relative path to the file.
+        Strategy:
+          1) Look for a file under 'tasks/' that starts with f"{task_id}-" and endswith ".md".
+             If found, return it.
+          2) If not found, `repo.git.fetch("origin")`, then list tasks on origin/<default_base>:
+               repo.git.ls_tree('-r','--name-only', f"origin/{self.settings.default_branch}", 'tasks')
+             Pick the first path that startswith f"tasks/{task_id}-" and endswith ".md".
+             If found, `repo.git.checkout(f"origin/{self.settings.default_branch}", "--", found_path)`, then return it.
+          3) If still not found, raise a clear error: f"Task file for {task_id} not found on origin/main".
+        """
+        workdir = Path(self.repo.ensure_local_clone())
+        tasks_dir = workdir / "tasks"
+        if tasks_dir.exists():
+            for p in sorted(tasks_dir.glob("*.md")):
+                name = p.name
+                if name.startswith(f"{task_id}-") and name.endswith(".md"):
+                    return f"tasks/{name}"
+
+        # Not found locally: fetch and inspect origin/<base>
+        try:
+            repo.git.fetch("origin")
+        except Exception:
+            pass
+
+        try:
+            output = repo.git.ls_tree("-r", "--name-only", f"origin/{self.settings.default_branch}", "tasks")
+        except Exception:
+            output = ""
+        for line in (output or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(f"tasks/{task_id}-") and line.endswith(".md"):
+                # Checkout that file from origin/<base> into working tree
+                try:
+                    repo.git.checkout(f"origin/{self.settings.default_branch}", "--", line)
+                except Exception:
+                    # If checkout fails, continue searching
+                    pass
+                # Verify file now exists
+                if (workdir / line).exists():
+                    return line
+
+        raise FileNotFoundError(f"Task file for {task_id} not found on origin/main")
 
     def on_merge(self, pr_event_payload: dict):
         # Always ensure an integration mark-done PR exists for T-XXXX
@@ -39,16 +90,18 @@ class Integrator(AgentBase):
             # Fallback to simple create/checkout
             self.repo.create_branch(branch)
 
-        # Modify matching task file(s): set status -> done (idempotent)
+        # Ensure the specific task file exists, then set status -> done (idempotent)
+        repo = self.repo._repo()
+        rel_path = self._ensure_task_file(self.repo_ctx, tid, repo)
+        tpath = Path(wdir) / rel_path
         updated = 0
-        for t in (Path(wdir) / "tasks").glob("*.md"):
-            txt = t.read_text(encoding="utf-8")
-            if f"id: {tid}" not in txt:
-                continue
-            new_txt, n = re.subn(r"status:\s*[^\n\r]+", "status: done", txt, count=1)
+        if tpath.exists():
+            txt = tpath.read_text(encoding="utf-8")
+            # Flip queued|in_review to done; noop if already done
+            new_txt, n = re.subn(r"status:\s*(queued|in_review)\b", "status: done", txt, count=1)
             if n > 0 and new_txt != txt:
-                t.write_text(new_txt, encoding="utf-8")
-                updated += 1
+                tpath.write_text(new_txt, encoding="utf-8")
+                updated = 1
 
         # Commit with conventional message (only if there are changes)
         commit_msg = f"chore(tasks): {tid} mark done"
@@ -78,7 +131,7 @@ class Integrator(AgentBase):
         # Open PR if not already open; otherwise reuse existing
         existing = self.vcs.get_open_pr_by_head(head=branch, base=self.settings.default_branch)
         if not existing:
-            body = f"Mark task {tid} as done."
+            body = "Flip task to done after feature PR merge."
             try:
                 self.vcs.open_pr(
                     head=branch,
@@ -93,11 +146,13 @@ class Integrator(AgentBase):
             existing = self.vcs.get_open_pr_by_head(head=branch, base=self.settings.default_branch)
 
         pr_number = existing.get("number") if isinstance(existing, dict) else None
-        owner_repo = f"{self.repo_ctx.owner}/{self.repo_ctx.repo}"
-        if pr_number is not None:
-            print(f"integrator: opened mark-done PR #{pr_number} for {tid} in {owner_repo}")
-        else:
-            print(f"integrator: opened mark-done PR for {tid} in {owner_repo}")
+        logger.info(
+            "integrator: mark-done PR #%s for %s in %s/%s",
+            pr_number,
+            tid,
+            self.repo_ctx.owner,
+            self.repo_ctx.repo,
+        )
 
         return {"ok": True, "tid": tid, "updated": updated, "pr_number": pr_number}
 
