@@ -21,6 +21,17 @@ class Integrator(AgentBase):
                 t.write_text(txt, encoding="utf-8")
                 updated += 1
         if updated:
-            self.repo.commit_and_push(f"{tid}: mark task done")
+            # Create a small integration PR instead of pushing to main directly
+            branch = f"integration/{tid}-mark-done"
+            self.repo.create_branch(branch)
+            self.repo.commit_all(f"{tid}: mark task done")
+            self.repo.push_branch(branch)
+            from ..adapters.vcs_github import pr_body_for_task
+            self.vcs.open_pr(
+                head=branch,
+                base=self.settings.default_branch,
+                title=f"{tid} - mark task done",
+                body=pr_body_for_task(tid, "mark task done"),
+            )
         return {"ok": True, "tid": tid, "updated": updated}
 

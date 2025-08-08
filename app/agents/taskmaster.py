@@ -28,20 +28,22 @@ Add a minimal smoke test so CI passes.
 
 class Taskmaster(AgentBase):
     def generate_or_update_tasks(self):
+        # Ensure target repo exists locally
         wdir = self.repo.ensure_local_clone()
         tasks_dir = Path(wdir) / "tasks"
         tasks_dir.mkdir(parents=True, exist_ok=True)
 
         # If there is any queued task already, do nothing
-        existing = list(tasks_dir.glob("*.md"))
-        for f in existing:
+        for f in tasks_dir.glob("*.md"):
             txt = f.read_text(encoding="utf-8")
             if re.search(r"status:\s*queued", txt):
                 return {"ok": True, "message": "Queued task already exists"}
 
-        # Create the first task
+        # Create the first task file directly on default branch
         first = tasks_dir / "T-0001-ci-setup.md"
         first.write_text(TASK_TMPL, encoding="utf-8")
+
+        # Commit and push on default branch
         self.repo.commit_and_push("chore: seed T-0001 basic CI task")
         return {"ok": True, "message": "Seeded T-0001"}
 

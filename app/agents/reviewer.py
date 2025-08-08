@@ -1,16 +1,40 @@
+import re
 from .base import AgentBase
 from ..adapters.ci_checks import summarize_repo_checks
 
+
 class Reviewer(AgentBase):
     def review_pull_request(self, pr_event_payload: dict):
-        repo = pr_event_payload.get("repository", {})
         pr = pr_event_payload.get("pull_request", {})
         number = pr.get("number")
-        head = pr.get("head", {}).get("ref")
+        head_ref = pr.get("head", {}).get("ref", "")
+        title = pr.get("title", "")
 
-        summary = summarize_repo_checks()
-        body = f"Automated review summary for `{head}`:\n\n{summary}\n\nIf checks are green and acceptance criteria are met, mark task status to `ready_for_integration`."
+        # Try to extract linked task id from PR title
+        tid_match = re.search(r"(T-\d+)", title or "")
+        task_id = tid_match.group(1) if tid_match else None
 
-        self.vcs.comment_on_pr(number, body)
-        return {"ok": True, "pr": number}
+        checks_summary = summarize_repo_checks()
+
+        lines = []
+        lines.append(f"Automated review summary for `{head_ref}`")
+        lines.append("")
+        lines.append(f"- Head ref: `{head_ref}`")
+        lines.append(f"- Linked task: `{task_id}`" if task_id else "- Linked task: not detected in title")
+        lines.append("")
+        lines.append("### CI checklist")
+        lines.append(checks_summary.rstrip())
+        lines.append("")
+        lines.append("### Acceptance reminder")
+        if task_id:
+            lines.append(f"- Validate acceptance criteria in `{task_id}` task file and PR body checklist")
+        else:
+            lines.append("- Validate acceptance criteria in the linked task and PR body checklist")
+        lines.append("- Keep changes minimal and focused; avoid protected paths")
+
+        body = "\n".join(lines)
+
+        if number is not None:
+            self.vcs.comment_on_pr(int(number), body)
+        return {"ok": True, "pr": number, "task": task_id, "head": head_ref}
 
