@@ -1,3 +1,5 @@
 .env
 venv/
-state/
+state/ 
+__pycache__
+sanity-check.bash

@@ -287,15 +287,12 @@ def bootstrap_endpoint(repo_id: str):
 
 @app.post("/poll/once")
 def poll_all_once():
-    settings = load_settings()
-    summaries: Dict[str, Any] = {}
+    # Poll only repos in observe/pr modes; return a list of summaries
+    results: List[Dict[str, Any]] = []
     for rc in list_repos():
-        summaries[rc.id] = poll_repo(rc)
-    return {
-        "ok": True,
-        "summaries": summaries,
-        "polling_enabled": settings.polling_enabled,
-    }
+        if rc.mode in {RepoMode.observe, RepoMode.pr}:
+            results.append(poll_repo(rc))
+    return results
 
 
 @app.post("/repos/{repo_id}/poll")

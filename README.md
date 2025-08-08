@@ -256,6 +256,13 @@ Environment flags (optional): `POLLING_ENABLED`, `POLL_INTERVAL_ACTIVE`, `POLL_I
 
 See also: `docs/CHANGELOG.md` for implementation details.
 
+Try it manually:
+
+```bash
+curl -sX POST http://localhost:8000/poll/once | jq
+curl -sX POST http://localhost:8000/repos/{owner_repo}/poll | jq
+```
+
 ---
 
 ## Enabling LLM steps (when ready)

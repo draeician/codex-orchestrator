@@ -1,248 +1,217 @@
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from .registry import RepoContext
-from .registry import STATE_DIR
-from .adapters.vcs_github import VCS
+from .registry import RepoContext, STATE_DIR
 from .agents.reviewer import Reviewer
 from .agents.integrator import Integrator
 from .config import load_settings
 
 
-ETAG_DIR = STATE_DIR / "etags"
+# ---- ETag state helpers ----
+
+def _etag_path(repo_id: str) -> Path:
+    etag_dir = STATE_DIR / "etags"
+    etag_dir.mkdir(parents=True, exist_ok=True)
+    return etag_dir / f"{repo_id}.json"
 
 
-def _now_epoch() -> int:
-    return int(time.time())
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _repo_state_path(repo_id: str) -> Path:
-    return ETAG_DIR / f"{repo_id}.json"
-
-
-def _load_repo_state(repo_id: str) -> Dict[str, Any]:
-    path = _repo_state_path(repo_id)
+def _load_etags(repo_id: str) -> Dict[str, Any]:
+    path = _etag_path(repo_id)
     if not path.exists():
-        return {}
+        return {"open": {"etag": None, "seen": []}, "closed": {"etag": None, "last_merged_at": None}}
     try:
-        txt = path.read_text(encoding="utf-8")
-        return json.loads(txt) if txt.strip() else {}
+        raw = path.read_text(encoding="utf-8").strip()
+        data = json.loads(raw) if raw else {}
     except Exception:
-        return {}
+        data = {}
+    # Ensure buckets exist
+    open_b = data.get("open") or {}
+    closed_b = data.get("closed") or {}
+    data["open"] = {"etag": open_b.get("etag"), "seen": open_b.get("seen", [])}
+    data["closed"] = {"etag": closed_b.get("etag"), "last_merged_at": closed_b.get("last_merged_at")}
+    return data
 
 
-def _save_repo_state(repo_id: str, state: Dict[str, Any]) -> None:
-    ETAG_DIR.mkdir(parents=True, exist_ok=True)
-    path = _repo_state_path(repo_id)
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+def _save_etags(repo_id: str, data: Dict[str, Any]) -> None:
+    path = _etag_path(repo_id)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def load_etag(repo_id: str, key: str) -> Optional[str]:
-    state = _load_repo_state(repo_id)
-    return (state.get(key) or {}).get("etag")
+# ---- GitHub requests ----
 
-
-def save_etag(repo_id: str, key: str, etag: Optional[str]) -> None:
-    state = _load_repo_state(repo_id)
-    bucket = dict(state.get(key) or {})
-    if etag:
-        bucket["etag"] = etag
-    state[key] = bucket
-    _save_repo_state(repo_id, state)
-
-
-def _update_reviewed_heads(repo_id: str, heads: List[str]) -> None:
-    state = _load_repo_state(repo_id)
-    open_bucket = dict(state.get("open") or {})
-    seen = set(open_bucket.get("reviewed_heads", []))
-    for h in heads:
-        seen.add(h)
-    # Keep only recent up to 200
-    open_bucket["reviewed_heads"] = list(list(seen))[-200:]
-    state["open"] = open_bucket
-    _save_repo_state(repo_id, state)
-
-
-def _get_reviewed_heads(repo_id: str) -> set[str]:
-    state = _load_repo_state(repo_id)
-    return set((state.get("open") or {}).get("reviewed_heads", []))
-
-
-def _get_cycle(repo_id: str) -> int:
-    state = _load_repo_state(repo_id)
-    return int(state.get("cycle", 0))
-
-
-def _set_cycle(repo_id: str, value: int) -> None:
-    state = _load_repo_state(repo_id)
-    state["cycle"] = int(value)
-    _save_repo_state(repo_id, state)
-
-
-def _get_last_merged_seen(repo_id: str) -> Optional[str]:
-    state = _load_repo_state(repo_id)
-    return (state.get("closed") or {}).get("last_seen_merged_at")
-
-
-def _set_last_merged_seen(repo_id: str, iso_ts: str) -> None:
-    state = _load_repo_state(repo_id)
-    closed_bucket = dict(state.get("closed") or {})
-    closed_bucket["last_seen_merged_at"] = iso_ts
-    state["closed"] = closed_bucket
-    _save_repo_state(repo_id, state)
-
-
-def compute_next_interval(remaining: Optional[int], reset_epoch: Optional[int], active: bool) -> int:
+def _gh_get(url: str, headers: Optional[Dict[str, str]] = None) -> Tuple[int, Dict[str, str], Any]:
     settings = load_settings()
-    # Backoff if close to budget
-    if remaining is not None and remaining < int(settings.min_remaining_budget):
-        now = _now_epoch()
-        if reset_epoch and reset_epoch > now:
-            # Backoff between 600 and 900 seconds or until reset
-            wait = max(600, min(900, reset_epoch - now))
-            return int(wait)
-        return 600
-    return int(settings.poll_interval_active if active else settings.poll_interval_idle)
-
-
-def _parse_rate_headers(headers: httpx.Headers) -> Dict[str, Any]:
-    remaining = headers.get("X-RateLimit-Remaining")
-    reset = headers.get("X-RateLimit-Reset")
-    etag = headers.get("ETag")
+    base_headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {settings.gh_token}",
+        "User-Agent": "codex-orchestrator-poller",
+    }
+    if headers:
+        base_headers.update(headers)
     try:
-        remaining_i = int(remaining) if remaining is not None else None
-    except ValueError:
-        remaining_i = None
-    try:
-        reset_i = int(reset) if reset is not None else None
-    except ValueError:
-        reset_i = None
-    return {"remaining": remaining_i, "reset": reset_i, "etag": etag}
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(url, headers=base_headers)
+        status = resp.status_code
+        # Convert headers to plain dict[str, str]
+        hdrs: Dict[str, str] = {k: v for k, v in resp.headers.items()}
+        try:
+            data = resp.json() if status != 304 else None
+        except Exception:
+            data = None
+        return status, hdrs, data
+    except Exception as e:  # pragma: no cover
+        # Network/transport error; surface as 0
+        return 0, {}, {"error": str(e)}
 
+
+# ---- Core ----
 
 def poll_repo(repo_ctx: RepoContext) -> Dict[str, Any]:
-    settings = load_settings()
-    vcs = VCS(repo_ctx, settings.gh_token)
-    base_url = f"{vcs.base}/repos/{repo_ctx.owner}/{repo_ctx.repo}/pulls"
+    owner = repo_ctx.owner
+    repo = repo_ctx.repo
 
-    reviewed = 0
-    integrated = 0
-    active = False
+    open_prs_url = (
+        f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=10"
+    )
+    closed_prs_url = (
+        f"https://api.github.com/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=10"
+    )
 
-    # Open PRs polling
-    open_key = "open"
-    open_etag = load_etag(repo_ctx.id, open_key)
-    headers = dict(vcs.headers)
+    state = _load_etags(repo_ctx.id)
+
+    open_changed: List[Dict[str, Any]] = []
+    merged_changed: List[Dict[str, Any]] = []
+    last_200_headers: Optional[Dict[str, str]] = None
+
+    # ---- OPEN PRs pass ----
+    open_headers: Dict[str, str] = {}
+    open_etag = (state.get("open") or {}).get("etag")
     if open_etag:
-        headers["If-None-Match"] = open_etag
-
-    open_params = {"state": "open", "sort": "updated", "direction": "desc", "per_page": 10}
-    with httpx.Client(timeout=30.0) as client:
-        open_resp = client.get(base_url, headers=headers, params=open_params)
-
-    open_rate = _parse_rate_headers(open_resp.headers)
-    if open_resp.status_code == 200:
-        prs: List[Dict[str, Any]] = open_resp.json()  # type: ignore[assignment]
-        active = len(prs) > 0
-        # Save new ETag
-        save_etag(repo_ctx.id, open_key, open_rate.get("etag"))
-        # Review idempotently by head SHA
-        seen_heads = _get_reviewed_heads(repo_ctx.id)
-        to_mark: List[str] = []
-        for pr in prs:
-            head = (pr.get("head") or {})
-            head_ref = head.get("ref", "")
-            head_sha = head.get("sha", "")
-            if not head_sha or head_sha in seen_heads:
-                continue
-            payload = {"action": "synchronize", "pull_request": {**pr, "head": {"ref": head_ref, "sha": head_sha}}}
-            Reviewer(repo_ctx).review_pull_request(payload)
-            reviewed += 1
-            to_mark.append(head_sha)
-        if to_mark:
-            _update_reviewed_heads(repo_ctx.id, to_mark)
-    elif open_resp.status_code == 304:
-        # Not modified; nothing to do
-        pass
-    else:
-        # Non-success; return early with status
+        open_headers["If-None-Match"] = open_etag
+    status, hdrs, data = _gh_get(open_prs_url, headers=open_headers)
+    if status in {403, 404, 422, 0}:
+        print(f"[poller] open PRs error for {repo_ctx.id}: status={status}")
         return {
-            "checked": True,
-            "reviewed": 0,
-            "integrated": 0,
-            "status": f"error:{open_resp.status_code}",
-            "next_interval": compute_next_interval(open_rate.get("remaining"), open_rate.get("reset"), active),
-            "rate": open_rate,
+            "repo": repo_ctx.id,
+            "open_changed": [],
+            "merged_changed": [],
+            "rate_limit": {"remaining": None, "reset": None},
+            "error": f"open:{status}",
         }
+    if status == 200:
+        last_200_headers = hdrs
+        new_etag = hdrs.get("ETag")
+        if new_etag:
+            state.setdefault("open", {})["etag"] = new_etag
+        open_changed = list(data or [])
+    elif status == 304:
+        open_changed = []
 
-    # Closed PRs polling every Nth cycle
-    cycle = _get_cycle(repo_ctx.id)
-    next_cycle = (cycle + 1) % 3
-    _set_cycle(repo_ctx.id, next_cycle)
+    # ---- CLOSED PRs pass ----
+    closed_headers: Dict[str, str] = {}
+    closed_etag = (state.get("closed") or {}).get("etag")
+    if closed_etag:
+        closed_headers["If-None-Match"] = closed_etag
+    status2, hdrs2, data2 = _gh_get(closed_prs_url, headers=closed_headers)
+    if status2 in {403, 404, 422, 0}:
+        print(f"[poller] closed PRs error for {repo_ctx.id}: status={status2}")
+        return {
+            "repo": repo_ctx.id,
+            "open_changed": [pr.get("number") for pr in open_changed],
+            "merged_changed": [],
+            "rate_limit": {"remaining": None, "reset": None},
+            "error": f"closed:{status2}",
+        }
+    last_merged_at = (state.get("closed") or {}).get("last_merged_at")
+    newest_merged_at: Optional[str] = last_merged_at
+    if status2 == 200:
+        last_200_headers = hdrs2  # the last 200 wins
+        new_etag = hdrs2.get("ETag")
+        if new_etag:
+            state.setdefault("closed", {})["etag"] = new_etag
+        pulls: List[Dict[str, Any]] = list(data2 or [])
+        for pr in pulls:
+            merged_at = pr.get("merged_at")
+            if not merged_at:
+                continue
+            if last_merged_at and merged_at <= last_merged_at:
+                continue
+            merged_changed.append(pr)
+            if newest_merged_at is None or merged_at > newest_merged_at:
+                newest_merged_at = merged_at
+        if newest_merged_at:
+            state.setdefault("closed", {})["last_merged_at"] = newest_merged_at
+    elif status2 == 304:
+        pass
 
-    closed_rate: Dict[str, Any] = {}
-    if cycle == 0:
-        closed_key = "closed"
-        closed_etag = load_etag(repo_ctx.id, closed_key)
-        headers2 = dict(vcs.headers)
-        if closed_etag:
-            headers2["If-None-Match"] = closed_etag
-        closed_params = {"state": "closed", "sort": "updated", "direction": "desc", "per_page": 10}
-        with httpx.Client(timeout=30.0) as client:
-            closed_resp = client.get(base_url, headers=headers2, params=closed_params)
-        closed_rate = _parse_rate_headers(closed_resp.headers)
-        if closed_resp.status_code == 200:
-            pulls: List[Dict[str, Any]] = closed_resp.json()
-            save_etag(repo_ctx.id, closed_key, closed_rate.get("etag"))
-            last_seen = _get_last_merged_seen(repo_ctx.id)
-            max_seen = last_seen
-            for pr in pulls:
-                merged_at = pr.get("merged_at")
-                if not merged_at:
-                    continue
-                if last_seen and merged_at <= last_seen:
-                    continue
-                # Synthetic payload for Integrator
-                payload = {"action": "closed", "pull_request": pr}
-                Integrator(repo_ctx).on_merge(payload)
-                integrated += 1
-                if max_seen is None or merged_at > max_seen:
-                    max_seen = merged_at
-            if max_seen:
-                _set_last_merged_seen(repo_ctx.id, max_seen)
-        elif closed_resp.status_code == 304:
-            pass
-        else:
-            # keep summary, but note error
-            closed_rate["error"] = closed_resp.status_code
+    # ---- Rate limit ----
+    remaining: Optional[int] = None
+    reset_epoch: Optional[int] = None
+    if last_200_headers is not None:
+        try:
+            remaining = int(last_200_headers.get("X-RateLimit-Remaining", ""))
+        except Exception:
+            remaining = None
+        try:
+            reset_epoch = int(last_200_headers.get("X-RateLimit-Reset", ""))
+        except Exception:
+            reset_epoch = None
 
-    # Compute next interval based on whichever latest rate info we have
-    rate = open_rate or closed_rate or {}
-    next_interval = compute_next_interval(rate.get("remaining"), rate.get("reset"), active)
+    # ---- Actions ----
+    repo_full_name = f"{owner}/{repo}"
+    open_numbers: List[int] = []
+    for pr in open_changed:
+        try:
+            payload = {
+                "action": "synchronize",
+                "pull_request": {
+                    "number": pr.get("number"),
+                    "title": pr.get("title"),
+                    "head": {"ref": pr.get("head", {}).get("ref"), "sha": pr.get("head", {}).get("sha")},
+                    "base": {"ref": pr.get("base", {}).get("ref")},
+                },
+                "repository": {"full_name": repo_full_name},
+            }
+            Reviewer(repo_ctx).review_pull_request(payload)
+            if pr.get("number") is not None:
+                open_numbers.append(int(pr["number"]))
+        except Exception as e:  # pragma: no cover
+            print(f"[poller] reviewer error for {repo_ctx.id} PR#{pr.get('number')}: {e}")
+
+    merged_numbers: List[int] = []
+    for pr in merged_changed:
+        try:
+            payload = {
+                "action": "closed",
+                "pull_request": {
+                    "number": pr.get("number"),
+                    "title": pr.get("title"),
+                    "merged": True,
+                    "merge_commit_sha": pr.get("merge_commit_sha"),
+                },
+                "repository": {"full_name": repo_full_name},
+            }
+            Integrator(repo_ctx).on_merge(payload)
+            if pr.get("number") is not None:
+                merged_numbers.append(int(pr["number"]))
+        except Exception as e:  # pragma: no cover
+            print(f"[poller] integrator error for {repo_ctx.id} PR#{pr.get('number')}: {e}")
+
+    # ---- Save and summarize ----
+    _save_etags(repo_ctx.id, state)
 
     summary: Dict[str, Any] = {
-        "checked": True,
-        "reviewed": reviewed,
-        "integrated": integrated,
-        "status": "ok" if (reviewed or integrated) else "idle",
-        "next_interval": next_interval,
-        "rate": rate,
+        "repo": repo_ctx.id,
+        "open_changed": open_numbers,
+        "merged_changed": merged_numbers,
+        "rate_limit": {"remaining": remaining, "reset": reset_epoch},
     }
-
-    remaining = rate.get("remaining")
-    reset_epoch = rate.get("reset")
-    if isinstance(remaining, int) and remaining < int(load_settings().min_remaining_budget or 0):
-        if isinstance(reset_epoch, int):
-            summary["backoff_until"] = datetime.fromtimestamp(reset_epoch, tz=timezone.utc).isoformat()
+    if remaining is not None and remaining < 200 and reset_epoch:
+        summary["backoff_until"] = datetime.fromtimestamp(reset_epoch, tz=timezone.utc).isoformat()
     return summary
